@@ -1,0 +1,9 @@
+# Python virtual environment
+.venv/
+
+# macOS
+.DS_Store
+
+# Vite build output (inside adr-viz)
+adr-viz/node_modules/
+adr-viz/dist/
