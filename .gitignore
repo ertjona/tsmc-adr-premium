@@ -7,3 +7,8 @@
 # Vite build output (inside adr-viz)
 adr-viz/node_modules/
 adr-viz/dist/
+
+# Python caches
+__pycache__/
+.pytest_cache/
+.ruff_cache/
