@@ -38,6 +38,25 @@ class TestDropBadTicks:
 
         assert len(out) == 6
 
+    def test_drops_bad_tick_on_latest_day(self):
+        # The latest day feeds the "Now" point, so a bad print there must be caught too.
+        s = series([30.0, 30.1, 30.0, 1.8])
+
+        out = drop_bad_ticks(s, max_dev=0.1)
+
+        assert list(out.values) == [30.0, 30.1, 30.0]
+
+    def test_drops_bad_tick_on_first_day(self):
+        s = series([1.8, 30.0, 30.1, 30.0])
+
+        out = drop_bad_ticks(s, max_dev=0.1)
+
+        assert list(out.values) == [30.0, 30.1, 30.0]
+
+    def test_short_series_is_kept(self):
+        assert len(drop_bad_ticks(series([30.0]), max_dev=0.1)) == 1
+        assert len(drop_bad_ticks(series([]), max_dev=0.1)) == 0
+
     def test_drops_nan(self):
         s = series([30.0, np.nan, 30.0])
 
@@ -57,6 +76,10 @@ class TestClassifySignal:
 
     def test_nan_means_not_enough_data(self):
         assert classify_signal(np.nan)[1] == "Not enough data"
+
+    def test_infinite_z_means_not_enough_data(self):
+        assert classify_signal(float("-inf"))[1] == "Not enough data"
+        assert classify_signal(float("inf"))[1] == "Not enough data"
 
 
 def test_calculate_premium_adds_smoothed_and_rolling_columns():
@@ -80,3 +103,9 @@ def test_current_zscore_uses_latest_rolling_band():
     df = pd.DataFrame({"premium_1y_mean": [10.0, 15.0], "premium_1y_std": [1.0, 2.0]})
 
     assert current_zscore(df, 19.0) == 2.0
+
+
+def test_current_zscore_is_nan_when_band_is_flat():
+    df = pd.DataFrame({"premium_1y_mean": [15.0], "premium_1y_std": [0.0]})
+
+    assert np.isnan(current_zscore(df, 10.0))

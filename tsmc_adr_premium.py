@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -36,6 +37,7 @@ OUTPUT_CSV = "tsmc_adr_premium.csv"
 OUTPUT_PNG = "tsmc_adr_premium.png"
 ADR_RATIO = 5           # 1 TSM ADR = 5 shares of 2330.TW
 SIGNAL_WINDOW = 252     # 用近 1 年的平均與標準差判斷高低（溢價水準會隨時間漂移，不用全期平均）
+MIN_BAND_DAYS = 60      # 區間至少要這麼多天才畫；不足 1 年時區間會比 1 年短
 SMOOTH_DAYS = 5         # 平滑線天數，降低兩市場收盤時間差造成的每日雜訊
 # 同時偏離前後兩天超過這個比例視為錯誤報價（例：TWD=X 曾出現 1.8 而非 30）
 MAX_JUMP = {"TSM_USD": 0.4, "TW2330_TWD": 0.4, "USDTWD": 0.1}
@@ -68,7 +70,8 @@ def drop_bad_ticks(s, max_dev):
     """刪掉明顯錯誤的報價與 NaN。
 
     只刪「單日尖刺」：同時偏離前一天與後一天超過 max_dev 的點。
-    持續的價格變動會保留；最新一天沒有後一天可比，一律保留。
+    第一天與最新一天只有一邊可比，就只看那一邊（最新一天會用在「Now」，不能放過）。
+    持續的價格變動會保留。連續兩天以上的錯誤報價抓不到。
 
     Args:
         s: 價格 Series。
@@ -78,8 +81,12 @@ def drop_bad_ticks(s, max_dev):
         過濾後的 Series（新物件）。
     """
     s = s.dropna()
+    if len(s) < 2:
+        return s
     off_prev = (s / s.shift(1) - 1).abs() > max_dev
     off_next = (s / s.shift(-1) - 1).abs() > max_dev
+    off_prev.iloc[0] = off_next.iloc[0]
+    off_next.iloc[-1] = off_prev.iloc[-1]
     return s[~(off_prev & off_next)]
 
 
@@ -177,20 +184,26 @@ def calculate_premium(df):
 
     p = df["premium_pct"]
     df["premium_5d"] = p.rolling(SMOOTH_DAYS).mean()
-    df["premium_1y_mean"] = p.rolling(SIGNAL_WINDOW, min_periods=60).mean()
-    df["premium_1y_std"] = p.rolling(SIGNAL_WINDOW, min_periods=60).std()
+    df["premium_1y_mean"] = p.rolling(SIGNAL_WINDOW, min_periods=MIN_BAND_DAYS).mean()
+    df["premium_1y_std"] = p.rolling(SIGNAL_WINDOW, min_periods=MIN_BAND_DAYS).std()
 
     return df
 
 
 def current_zscore(df, premium_pct):
-    """目前溢價相對近 1 年平均的 z 分數（用歷史最後一天的滾動平均與標準差）"""
-    return (premium_pct - df["premium_1y_mean"].iloc[-1]) / df["premium_1y_std"].iloc[-1]
+    """目前溢價相對近 1 年平均的 z 分數（用歷史最後一天的滾動平均與標準差）
+
+    資料不足或標準差為 0 時回傳 NaN。
+    """
+    mean, std = df["premium_1y_mean"].iloc[-1], df["premium_1y_std"].iloc[-1]
+    if pd.isna(std) or std == 0:
+        return float("nan")
+    return (premium_pct - mean) / std
 
 
 def classify_signal(z):
     """依 z 分數回傳 (終端機文字, 圖表文字, 顏色)"""
-    if pd.isna(z):
+    if not np.isfinite(z):
         return "資料不足", "Not enough data", "#555555"
     for threshold, console, chart, color in SIGNAL_LEVELS:
         if z > threshold:
@@ -226,7 +239,10 @@ def print_stats(df, snap, z):
 
     # 判斷目前水位（相對近 1 年）
     mean, std = df["premium_1y_mean"].iloc[-1], df["premium_1y_std"].iloc[-1]
-    print(f"  近 1 年區間：{mean:+.1f}% ± {std:.1f}%  (z = {z:+.2f})")
+    if np.isfinite(z):
+        print(f"  近 1 年區間：{mean:+.1f}% ± {std:.1f}%  (z = {z:+.2f})")
+    else:
+        print(f"  近 1 年區間：資料不足（至少需要 {MIN_BAND_DAYS} 個交易日）")
     print(f"  訊號：{classify_signal(z)[0]}")
     print("=" * 60)
 
@@ -258,7 +274,8 @@ def plot_chart(df, snap, z):
     _, signal_text, color = classify_signal(z)
     now_x = max(snap["tsm_date"], snap["tw_date"])
     ax1.plot(now_x, current, "o", color=color, markersize=6, zorder=5)
-    ax1.annotate(f"Now: {current:+.1f}%\n{signal_text} (z {z:+.1f})",
+    z_text = f" (z {z:+.1f})" if np.isfinite(z) else ""
+    ax1.annotate(f"Now: {current:+.1f}%\n{signal_text}{z_text}",
                  xy=(now_x, current),
                  xytext=(-150, 30), textcoords="offset points",
                  fontsize=10, fontweight="bold", color=color,

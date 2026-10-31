@@ -43,7 +43,7 @@ Linear pipeline:
 3. `latest_snapshot(tsm, tw, fx)` — pairs each market's latest close even when dates differ (before the NY open, 2330 is a day ahead of TSM). FX is taken on or before the latest stock date. This is the "Now" value.
 4. `print_stats(df, snap, z)` — console output with signal (z-score vs the 1-year rolling mean, not the full period: the premium level drifts over time)
 5. `save_csv(df)` — exports daily data (date-aligned history only)
-6. `plot_chart(df, snap, z)` — matplotlib dual-panel chart: daily premium (faint), 5-day avg, 1-year avg ±1σ band, and a "Now" label colored by signal; title shows each market's latest price and date (`format_snapshot`). Chart text must stay English/ASCII (no CJK font in CI) and `$` must be escaped (mathtext).
+6. `plot_chart(df, snap, z)` — matplotlib dual-panel chart: daily premium (faint), 5-day avg, 1-year avg ±1σ band, and a "Now" label colored by signal; title shows each market's latest price and date (`format_snapshot`). Chart text must not use CJK characters or emoji (CI has no CJK font; DejaVu Sans covers Latin plus symbols like ± σ ·), and `$` must be escaped (mathtext).
 
 ### GitHub Actions (`.github/workflows/update-data.yml`)
 
@@ -62,6 +62,6 @@ The component uses `useState`/`useMemo`/`useCallback` only — no external depen
 ## Key Constants
 
 - ADR ratio: `5` (hardcoded in both files — 1 TSM ADR = 5 Taiwan shares)
-- Signal: z vs 1-year rolling window (`SIGNAL_WINDOW = 252`); levels at ±0.5σ and ±1.5σ (`SIGNAL_LEVELS`)
-- Bad-tick filter: `MAX_JUMP` (40% for stocks, 10% for FX)
+- Signal (Python only): z vs 1-year rolling window (`SIGNAL_WINDOW = 252`, band drawn from `MIN_BAND_DAYS = 60`); levels at ±0.5σ and ±1.5σ (`SIGNAL_LEVELS`). z is NaN when data is short or the band is flat → "Not enough data". The JSX tracker still uses the full-period mean/σ.
+- Bad-tick filter: `MAX_JUMP` (40% for stocks, 10% for FX). A point is dropped if it is off from both neighbours; the first/latest day is checked against its one neighbour. Two bad days in a row are not caught.
 - Chart resampling threshold: 200 data points → monthly
