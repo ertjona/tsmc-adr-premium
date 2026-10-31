@@ -62,6 +62,6 @@ The component uses `useState`/`useMemo`/`useCallback` only — no external depen
 ## Key Constants
 
 - ADR ratio: `5` (hardcoded in both files — 1 TSM ADR = 5 Taiwan shares)
-- Signal (Python only): z vs 1-year rolling window (`SIGNAL_WINDOW = 252`, band drawn from `MIN_BAND_DAYS = 60`); levels at ±0.5σ and ±1.5σ (`SIGNAL_LEVELS`). z is NaN when data is short or the band is flat → "Not enough data". The JSX tracker still uses the full-period mean/σ.
-- Bad-tick filter: `MAX_JUMP` (40% for stocks, 10% for FX). A point is dropped if it is off from both neighbours; the first/latest day is checked against its one neighbour. Two bad days in a row are not caught.
+- Signal (Python only): z vs 1-year rolling window (`SIGNAL_WINDOW = 252`, band drawn from `MIN_BAND_DAYS = 60`); levels at ±0.5σ and ±1.5σ (`SIGNAL_LEVELS`). z is NaN when the band is missing (< `MIN_BAND_DAYS` rows) or flat → "No signal" (the console says which). With fewer than 252 rows the labels read e.g. "120d avg" instead of "1y avg" (`band_name`). The JSX tracker still uses the full-period mean/σ.
+- Bad-tick filter: `MAX_JUMP` (40% for stocks, 10% for FX). Walking forward, a point is dropped if it is off from both the last kept point and the median of the next 3 points; the latest day is checked against the last kept point, the first day against the first kept point after it. Catches short runs of bad ticks; a real move > `MAX_JUMP` on the latest day is held back until the next day confirms it.
 - Chart resampling threshold: 200 data points → monthly
