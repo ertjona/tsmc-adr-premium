@@ -5,7 +5,7 @@ import pytest
 from tsmc_adr_premium import (
     CONFIRM_DAYS,
     band_label,
-    build_signal,
+    build_now_view,
     calculate_premium,
     classify_signal,
     current_zscore,
@@ -186,7 +186,7 @@ def test_band_label():
     assert band_label(120) == ("120d", "120 天")
 
 
-def test_build_signal_bundles_z_band_texts_and_open_estimate():
+def test_build_now_view_bundles_signal_and_open_estimate():
     n = 100
     df = pd.DataFrame({
         "premium_1y_mean": np.full(n, 15.0),
@@ -200,13 +200,13 @@ def test_build_signal_bundles_z_band_texts_and_open_estimate():
         "premium_pct": 11.0,
     }
 
-    sig = build_signal(df, snap)
+    view = build_now_view(df, snap)
 
-    assert sig["z"] == -2.0
-    assert sig["band"] == "100d"
-    assert sig["chart"] == "Well below 100d avg"
-    assert sig["console"].startswith("🔵")
-    assert sig["est_open"]["price"] == pytest.approx(431.25)
+    assert view["z"] == -2.0
+    assert view["band"] == "100d"
+    assert view["chart"] == "Well below 100d avg"
+    assert view["console"].startswith("🔵")
+    assert view["est_open"]["price"] == pytest.approx(431.25)
 
 
 def test_current_zscore_is_nan_when_band_is_flat():

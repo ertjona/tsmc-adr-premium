@@ -180,9 +180,10 @@ def implied_tsm_open(snap, premium_ref):
 
     Before the NYSE open, 2330 has already closed today while TSM still sits at
     yesterday's close; TSM's open mostly follows. On a US holiday the next open
-    is a later day, so the texts name the dates of both closes instead of "today". Over 2016-2026 the 5-day avg
-    premium gave the closest estimate (median miss ~0.7%, vs ~1.7% for the 1-year
-    avg), so callers pass ``premium_5d``.
+    is a later day, so the texts name the dates of both closes instead of
+    "today". Over 2016-2026 the 5-day avg premium gave the closest estimate
+    (median miss ~0.7%, vs ~1.7% for the 1-year avg), so callers pass
+    ``premium_5d``.
 
     Args:
         snap: Output of ``latest_snapshot``.
@@ -203,8 +204,7 @@ def implied_tsm_open(snap, premium_ref):
         "change_pct": change,
         "console": (f"TSM 下次開盤預估：${price:.2f}（較 {tsm_d} 收盤 {change:+.1f}%；"
                     f"2330 {tw_d} 收盤 × 近 {SMOOTH_DAYS} 日平均溢價 {premium_ref:+.1f}%）"),
-        # chart text: $ escaped for matplotlib mathtext
-        "chart": (f"Est. next TSM open: \\${price:.2f} ({change:+.1f}% vs {tsm_d} close \\${snap['tsm_usd']:.2f})\n"
+        "chart": (f"Est. next TSM open: ${price:.2f} ({change:+.1f}% vs {tsm_d} close ${snap['tsm_usd']:.2f})\n"
                   f"from 2330 {tw_d} close x {SMOOTH_DAYS}-day avg premium ({premium_ref:+.1f}%)"),
     }
 
@@ -287,8 +287,8 @@ def classify_signal(z, band_days=SIGNAL_WINDOW):
             return console.format(zh=zh), chart.format(band=band), color
 
 
-def build_signal(df, snap):
-    """Everything the console and chart need about where the premium stands now.
+def build_now_view(df, snap):
+    """Everything the console and chart say about "now": the signal and the open estimate.
 
     Args:
         df: History from ``calculate_premium``.
@@ -308,9 +308,39 @@ def build_signal(df, snap):
     }
 
 
-def print_stats(df, snap, sig):
+def mathtext_safe(text):
+    """Escape $ so matplotlib doesn't treat paired dollars as mathtext."""
+    return text.replace("$", r"\$")
+
+
+def place_annotations(point, recent_lo, recent_hi):
+    """Pick where the "Now" label and the estimate box go on the premium axis.
+
+    All arguments are y positions as fractions of the axis (0 = bottom, 1 = top).
+    The box sits in a right-hand corner, where the recent lines and the "Now"
+    point are; it goes top-right if about 15% of the axis is free above them (or
+    there is more room above than below), else bottom-right. The label goes below the
+    point when the point is in the top third, else above.
+
+    Args:
+        point: Position of the "Now" point.
+        recent_lo, recent_hi: Lowest / highest position of the recent lines.
+
+    Returns:
+        (label_dy in points, box_y, box_va) for annotate / text.
+    """
+    label_dy = -45 if point > 2 / 3 else 30
+    room_above = 1 - max(point, recent_hi)
+    room_below = min(point, recent_lo)
+    box_room = 0.15  # height the two-line box needs, as a fraction of the axis
+    if room_above >= box_room or room_above >= room_below:
+        return label_dy, 0.97, "top"
+    return label_dy, 0.03, "bottom"
+
+
+def print_stats(df, snap, view):
     """Print key stats; "now" uses each market's latest close (snap), plus the signal
-    and, before the NYSE open, the estimated next TSM open (both in sig)."""
+    and, when 2330 has a newer close than TSM, the estimated next TSM open (view)."""
     p = df["premium_pct"]
 
     print("\n" + "=" * 60)
@@ -321,8 +351,8 @@ def print_stats(df, snap, sig):
     print("-" * 60)
     print(f"  目前溢價：{snap['premium_pct']:+.1f}%")
     print(f"    {format_snapshot(snap)}")
-    if sig["est_open"]:
-        print(f"  {sig['est_open']['console']}")
+    if view["est_open"]:
+        print(f"  {view['est_open']['console']}")
     print(f"  全期平均：{p.mean():+.1f}%")
     print(f"  全期中位數：{p.median():+.1f}%")
     print(f"  標準差：  {p.std():.1f}%")
@@ -345,24 +375,24 @@ def print_stats(df, snap, sig):
     elif std == 0:
         print(f"  近期區間：溢價在區間內沒有變動（{mean:+.1f}%），無法計算 z")
     else:
-        print(f"  近期區間（{sig['band']}）：{mean:+.1f}% ± {std:.1f}%  (z = {sig['z']:+.2f})")
-    print(f"  訊號：{sig['console']}")
+        print(f"  近期區間（{view['band']}）：{mean:+.1f}% ± {std:.1f}%  (z = {view['z']:+.2f})")
+    print(f"  訊號：{view['console']}")
     print("=" * 60)
 
 
-def plot_chart(df, snap, sig):
+def plot_chart(df, snap, view):
     """Draw the premium history chart.
 
     Top: daily premium, 5-day avg, rolling avg ±1σ band, a "Now" label with the
     latest-close premium (snap) and signal, and the estimated next TSM open
-    (sig["est_open"]) when there is one. Bottom: 2330.TW price.
+    (view["est_open"]) when there is one. Bottom: 2330.TW price.
     """
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), height_ratios=[3, 1],
                                     sharex=True, gridspec_kw={"hspace": 0.08})
 
     # ─── Top: premium ───
     mean, std = df["premium_1y_mean"], df["premium_1y_std"]
-    band = sig["band"]
+    band = view["band"]
 
     # Rolling avg ±1σ band: the premium level drifts, so judge high/low against
     # recent history. Skip it entirely (incl. legend) when there's too little data.
@@ -379,16 +409,21 @@ def plot_chart(df, snap, sig):
 
     # Mark "Now" (latest closes, dates may differ), colored by signal
     current = snap["premium_pct"]
-    color = sig["color"]
+    color = view["color"]
     now_x = max(snap["tsm_date"], snap["tw_date"])
     ax1.plot(now_x, current, "o", color=color, markersize=6, zorder=5)
-    z_text = f" (z {sig['z']:+.1f})" if np.isfinite(sig["z"]) else ""
-    # Keep the label and the estimate box away from the point: with the point in
-    # the upper part of the axis, the label goes below it and the box to the bottom
+    z_text = f" (z {view['z']:+.1f})" if np.isfinite(view["z"]) else ""
+    # Keep the label and the estimate box clear of the point and of the recent
+    # lines (the right-hand ~30% of the chart, where the box sits)
     y_lo, y_hi = ax1.get_ylim()
-    point_frac = (current - y_lo) / (y_hi - y_lo)
-    label_dy = -45 if point_frac > 2 / 3 else 30
-    ax1.annotate(f"Now: {current:+.1f}%\n{sig['chart']}{z_text}",
+
+    def to_frac(v):
+        return (v - y_lo) / (y_hi - y_lo)
+
+    recent = df["premium_pct"].iloc[-max(1, len(df) * 3 // 10):]
+    label_dy, box_y, box_va = place_annotations(
+        to_frac(current), to_frac(recent.min()), to_frac(recent.max()))
+    ax1.annotate(f"Now: {current:+.1f}%\n{view['chart']}{z_text}",
                  xy=(now_x, current),
                  xytext=(-150, label_dy), textcoords="offset points",
                  fontsize=10, fontweight="bold", color=color,
@@ -397,17 +432,15 @@ def plot_chart(df, snap, sig):
 
     ax1.set_ylabel("ADR Premium (%)", fontsize=11)
     updated = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M")
-    # matplotlib treats paired $ as mathtext, so escape them
-    latest = format_snapshot(snap).replace("$", r"\$")
+    latest = mathtext_safe(format_snapshot(snap))
     ax1.set_title("TSMC ADR Premium: TSM (NYSE) vs 2330.TW (TWSE)\n"
                   f"Latest: {latest}  |  Updated {updated} (Taipei)",
                   fontsize=12, pad=12)
     ax1.legend(loc="upper left", fontsize=9)
 
-    # Before the NYSE open: where TSM should open given 2330's newer close
-    if sig["est_open"]:
-        box_y, box_va = (0.03, "bottom") if point_frac > 0.5 else (0.97, "top")
-        ax1.text(0.99, box_y, sig["est_open"]["chart"],
+    # When 2330 has a newer close than TSM: where TSM's next open should be
+    if view["est_open"]:
+        ax1.text(0.99, box_y, mathtext_safe(view["est_open"]["chart"]),
                  transform=ax1.transAxes, ha="right", va=box_va, fontsize=10, color="#222",
                  bbox={"boxstyle": "round,pad=0.4", "fc": "white", "ec": "#888", "alpha": 0.9})
     ax1.grid(True, alpha=0.15)
@@ -444,10 +477,10 @@ def main():
     df, closes = fetch_data(period)
     df = calculate_premium(df)
     snap = latest_snapshot(closes["TSM_USD"], closes["TW2330_TWD"], closes["USDTWD"])
-    sig = build_signal(df, snap)
-    print_stats(df, snap, sig)
+    view = build_now_view(df, snap)
+    print_stats(df, snap, view)
     save_csv(df)
-    plot_chart(df, snap, sig)
+    plot_chart(df, snap, view)
 
     print(f"\n✅ 完成！可用 Excel 開啟 {OUTPUT_CSV} 進一步分析")
     print(f"   或執行 python {os.path.basename(__file__)} 10y 取得更長期的資料")
