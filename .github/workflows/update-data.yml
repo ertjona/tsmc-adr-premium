@@ -2,8 +2,14 @@ name: Update TSMC ADR Premium Data
 
 on:
   schedule:
-    - cron: '30 22 * * 1-5'  # 平日 22:30 UTC（NYSE 收盤後約 1.5 小時）
+    # GitHub cron 只能用 UTC，排程也可能延遲數十分鐘，所以預留緩衝
+    - cron: '30 23 * * 1-5'  # 台股開盤前：台北週二～六 07:30（美股收盤後）
+    - cron: '30 11 * * 1-5'  # 美股開盤前：台北週一～五 19:30（台股收盤後）
   workflow_dispatch:           # 允許手動觸發
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
 
 jobs:
   update-data:

@@ -20,13 +20,15 @@ TSMC ADR Premium Tracker
   - 匯率使用每日收盤中間價
 """
 
-import yfinance as yf
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from datetime import datetime, timedelta
-import sys
 import os
+import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
+import pandas as pd
+import yfinance as yf
 
 # ─── 設定 ───
 PERIOD = "5y"           # 預設抓 5 年資料，可改為 "1y", "2y", "10y", "max"
@@ -35,30 +37,91 @@ OUTPUT_PNG = "tsmc_adr_premium.png"
 ADR_RATIO = 5           # 1 TSM ADR = 5 shares of 2330.TW
 
 
+TICKERS = {"TSM_USD": "TSM", "TW2330_TWD": "2330.TW", "USDTWD": "TWD=X"}
+
+
+def _download_close(ticker, **kwargs):
+    """下載單一標的的收盤價 Series；抓不到時回傳空 Series"""
+    df = yf.download(ticker, auto_adjust=True, progress=False, **kwargs)
+    if df.empty:
+        return pd.Series(dtype=float)
+    # 展平 MultiIndex columns（yfinance 有時會回傳 MultiIndex）
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.droplevel(level=1, axis=1)
+    return df["Close"]
+
+
+def fill_latest_close(daily, intraday):
+    """用盤中最後一筆價格補上日線最新一天的收盤價。
+
+    Yahoo 剛收盤後，當天日線的 Close 常是 NaN（或還沒有那一列），
+    這裡用 5 分鐘線最後一筆價格補上。已有正式收盤價時不覆蓋。
+
+    Args:
+        daily: 日線收盤價，index 為 tz-naive 日期。
+        intraday: 盤中收盤價，index 為交易所當地時區的 tz-aware 時間。
+
+    Returns:
+        補好的日線 Series（新物件，不改動輸入）。
+    """
+    out = daily.copy()
+    intraday = intraday.dropna()
+    if intraday.empty:
+        return out
+
+    # 用交易所當地日期，避免盤後時間換成 UTC 後跑到隔天
+    day = pd.Timestamp(intraday.index[-1].date())
+    if day not in out.index or pd.isna(out.loc[day]):
+        out.loc[day] = intraday.iloc[-1]
+        out = out.sort_index()
+    return out
+
+
+def latest_snapshot(tsm, tw, fx):
+    """取三者各自最新的收盤價（日期可以不同）並計算溢價。
+
+    台股開盤前：TSM 是剛收的美股收盤，2330 是前一個台股收盤。
+    美股開盤前：2330 是剛收的台股收盤，TSM 是前一個美股收盤。
+
+    Args:
+        tsm: TSM 收盤價（USD）。
+        tw: 2330.TW 收盤價（TWD）。
+        fx: USD/TWD 匯率。
+
+    Returns:
+        dict，含各自的日期、價格，以及 premium_pct。
+    """
+    tsm, tw, fx = tsm.dropna(), tw.dropna(), fx.dropna()
+    implied = tsm.iloc[-1] / ADR_RATIO * fx.iloc[-1]
+    premium = (implied - tw.iloc[-1]) / tw.iloc[-1] * 100
+    return {
+        "tsm_date": tsm.index[-1], "tsm_usd": float(tsm.iloc[-1]),
+        "tw_date": tw.index[-1], "tw_twd": float(tw.iloc[-1]),
+        "fx_date": fx.index[-1], "usdtwd": float(fx.iloc[-1]),
+        "premium_pct": float(premium),
+    }
+
+
 def fetch_data(period=PERIOD):
-    """從 yfinance 抓取 TSM、2330.TW、USD/TWD 的歷史收盤價"""
+    """從 yfinance 抓取 TSM、2330.TW、USD/TWD 的歷史收盤價
+
+    Returns:
+        (merged, closes)：merged 是三者同日期對齊的 DataFrame（歷史用），
+        closes 是各自補好最新一天的收盤價 dict（最新快照用）。
+    """
     print(f"正在下載 {period} 的歷史資料...")
 
-    tsm = yf.download("TSM", period=period, auto_adjust=True, progress=False)
-    tw2330 = yf.download("2330.TW", period=period, auto_adjust=True, progress=False)
-    usdtwd = yf.download("TWD=X", period=period, auto_adjust=True, progress=False)
-
-    # 取收盤價，展平 MultiIndex columns（yfinance 有時會回傳 MultiIndex）
-    def get_close(df, name):
-        if isinstance(df.columns, pd.MultiIndex):
-            df = df.droplevel(level=1, axis=1)
-        return df[["Close"]].rename(columns={"Close": name})
-
-    tsm_close = get_close(tsm, "TSM_USD")
-    tw_close = get_close(tw2330, "TW2330_TWD")
-    fx_close = get_close(usdtwd, "USDTWD")
+    closes = {}
+    for name, ticker in TICKERS.items():
+        daily = _download_close(ticker, period=period)
+        intraday = _download_close(ticker, period="5d", interval="5m")
+        closes[name] = fill_latest_close(daily, intraday)
 
     # 合併（以日期為 key，inner join 只保留三者都有資料的交易日）
-    merged = tsm_close.join(tw_close, how="inner").join(fx_close, how="inner")
-    merged = merged.dropna()
+    merged = pd.concat(closes, axis=1, join="inner").dropna()
 
     print(f"  取得 {len(merged)} 個交易日的完整資料")
-    return merged
+    return merged, closes
 
 
 def calculate_premium(df):
@@ -74,8 +137,8 @@ def calculate_premium(df):
     return df
 
 
-def print_stats(df):
-    """印出關鍵統計數據"""
+def print_stats(df, snap):
+    """印出關鍵統計數據；目前溢價用各市場最新收盤（snap）"""
     p = df["premium_pct"]
 
     print("\n" + "=" * 60)
@@ -84,7 +147,10 @@ def print_stats(df):
     print(f"  資料期間：{df.index[0].strftime('%Y-%m-%d')} ~ {df.index[-1].strftime('%Y-%m-%d')}")
     print(f"  交易日數：{len(df)}")
     print("-" * 60)
-    print(f"  目前溢價：{p.iloc[-1]:+.1f}%")
+    print(f"  目前溢價：{snap['premium_pct']:+.1f}%")
+    print(f"    TSM {snap['tsm_date']:%Y-%m-%d} ${snap['tsm_usd']:.2f} · "
+          f"2330 {snap['tw_date']:%Y-%m-%d} NT${snap['tw_twd']:.0f} · "
+          f"USD/TWD {snap['fx_date']:%Y-%m-%d} {snap['usdtwd']:.3f}")
     print(f"  全期平均：{p.mean():+.1f}%")
     print(f"  全期中位數：{p.median():+.1f}%")
     print(f"  標準差：  {p.std():.1f}%")
@@ -101,7 +167,7 @@ def print_stats(df):
     print("=" * 60)
 
     # 判斷目前水位
-    current = p.iloc[-1]
+    current = snap["premium_pct"]
     avg = p.mean()
     std = p.std()
     if current > avg + 1.5 * std:
@@ -116,8 +182,8 @@ def print_stats(df):
     print("=" * 60)
 
 
-def plot_chart(df):
-    """畫出 ADR 溢價歷史走勢圖"""
+def plot_chart(df, snap):
+    """畫出 ADR 溢價歷史走勢圖；右端標注各市場最新收盤的溢價（snap）"""
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), height_ratios=[3, 1],
                                     sharex=True, gridspec_kw={"hspace": 0.08})
 
@@ -136,23 +202,29 @@ def plot_chart(df):
     if len(df) > 60:
         ma60 = p.rolling(60).mean()
         ax1.plot(df.index, ma60, color="#D85A30", linewidth=1.5,
-                 label=f"60-day MA", linestyle="--")
+                 label="60-day MA", linestyle="--")
 
     # 平均線
     ax1.axhline(avg, color="#1D9E75", linewidth=1, linestyle=":",
                 label=f"Period avg: {avg:.1f}%")
     ax1.axhline(0, color="#888", linewidth=0.5, alpha=0.5)
 
-    # 標注目前值
-    current = p.iloc[-1]
+    # 標注目前值（兩市場最新收盤，日期可能不同）
+    current = snap["premium_pct"]
+    now_x = max(snap["tsm_date"], snap["tw_date"])
+    ax1.plot(now_x, current, "o", color="#D85A30", markersize=5)
     ax1.annotate(f"Now: {current:+.1f}%",
-                 xy=(df.index[-1], current),
+                 xy=(now_x, current),
                  xytext=(-80, 20), textcoords="offset points",
                  fontsize=10, fontweight="bold", color="#D85A30",
-                 arrowprops=dict(arrowstyle="->", color="#D85A30", lw=1.2))
+                 arrowprops={"arrowstyle": "->", "color": "#D85A30", "lw": 1.2})
 
     ax1.set_ylabel("ADR Premium (%)", fontsize=11)
-    ax1.set_title("TSMC ADR Premium: TSM (NYSE) vs 2330.TW (TWSE)", fontsize=13, pad=12)
+    updated = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M")
+    ax1.set_title("TSMC ADR Premium: TSM (NYSE) vs 2330.TW (TWSE)\n"
+                  f"Latest closes: TSM {snap['tsm_date']:%m/%d} · 2330.TW {snap['tw_date']:%m/%d} · "
+                  f"USD/TWD {snap['fx_date']:%m/%d}  |  Updated {updated} (Taipei)",
+                  fontsize=13, pad=12)
     ax1.legend(loc="upper left", fontsize=9)
     ax1.grid(True, alpha=0.15)
 
@@ -185,11 +257,12 @@ def save_csv(df):
 def main():
     period = sys.argv[1] if len(sys.argv) > 1 else PERIOD
 
-    df = fetch_data(period)
+    df, closes = fetch_data(period)
     df = calculate_premium(df)
-    print_stats(df)
+    snap = latest_snapshot(closes["TSM_USD"], closes["TW2330_TWD"], closes["USDTWD"])
+    print_stats(df, snap)
     save_csv(df)
-    plot_chart(df)
+    plot_chart(df, snap)
 
     print(f"\n✅ 完成！可用 Excel 開啟 {OUTPUT_CSV} 進一步分析")
     print(f"   或執行 python {os.path.basename(__file__)} 10y 取得更長期的資料")
