@@ -41,6 +41,9 @@ MIN_BAND_DAYS = 60      # min rows before the band is drawn; with < 1 year it co
 SMOOTH_DAYS = 5         # smoothing window, damps day-to-day noise from the close-time gap
 # max relative jump before a quote counts as bad (TWD=X once printed 1.8 instead of 30)
 MAX_JUMP = {"TSM_USD": 0.4, "TW2330_TWD": 0.4, "USDTWD": 0.1}
+# a jump bigger than MAX_JUMP is accepted as a real new level only when this many
+# following days agree with it; runs of bad ticks up to this length are caught
+CONFIRM_DAYS = 5
 
 # (z lower bound, console text, chart text, color), matched from high to low
 SIGNAL_LEVELS = [
@@ -66,50 +69,48 @@ def _download_close(ticker, **kwargs):
     return df["Close"]
 
 
-def drop_bad_ticks(s, max_dev, lookahead=3):
+def drop_bad_ticks(s, max_dev):
     """Drop NaN and obviously wrong quotes (e.g. TWD=X printing 1.8 instead of 30).
 
-    Walking forward, a point is bad when it is more than ``max_dev`` away from
-    BOTH the last kept point AND the median of the next ``lookahead`` points.
-    With nothing ahead, only the last kept point counts, so the latest day
-    (which feeds "Now") is checked too. Using a median ahead catches short runs
-    of bad ticks, and a lasting level change is kept because the points after
-    it agree with it. The first point has nothing kept before it, so it is
-    checked afterwards against the first kept point after it.
+    Walk forward comparing each point with the last good one. A point more than
+    ``max_dev`` away is a bad tick, unless the next ``CONFIRM_DAYS`` points all
+    agree with it, which marks a real new level. The latest day therefore only
+    has to agree with the last good point, and a good day after a run of bad
+    ticks is kept. The first reference is the value that most of the first
+    ``CONFIRM_DAYS + 1`` points agree with (earliest wins a tie).
 
-    Limits: a real move larger than ``max_dev`` on the latest day is held back
-    until the next day confirms it, and two bad ticks at the very start of the
-    series are not caught.
+    Limits: a run of bad ticks longer than ``CONFIRM_DAYS`` is taken as a new
+    level; a real move bigger than ``max_dev`` is held back until
+    ``CONFIRM_DAYS`` later days confirm it; and a real level change inside the
+    first few points drops the points before it.
 
     Args:
         s: Price series.
         max_dev: Allowed relative deviation, e.g. 0.1 = 10%.
-        lookahead: How many following points form the forward reference.
 
     Returns:
-        Filtered series (a new object).
+        Filtered series (a new object). Series shorter than 3 points are
+        returned as is, since there is nothing to compare against.
     """
     s = s.dropna()
-    if len(s) < 2:
+    if len(s) < 3:
         return s
 
     def is_off(value, ref):
-        return ref is None or abs(value / ref - 1) > max_dev
+        return abs(value / ref - 1) > max_dev
 
     values = s.to_numpy()
-    keep = [True] * len(values)
-    last_kept = values[0]
-    for i in range(1, len(values)):
-        ahead = values[i + 1:i + 1 + lookahead]
-        fwd_ref = float(np.median(ahead)) if len(ahead) else None
-        if is_off(values[i], last_kept) and is_off(values[i], fwd_ref):
-            keep[i] = False
-        else:
-            last_kept = values[i]
-
-    next_kept = next((values[i] for i in range(1, len(values)) if keep[i]), None)
-    if next_kept is not None and is_off(values[0], next_kept):
-        keep[0] = False
+    window = values[:CONFIRM_DAYS + 1]
+    support = [sum(not is_off(w, c) for w in window) for c in window]
+    ref = window[int(np.argmax(support))]
+    keep = []
+    for i, v in enumerate(values):
+        ahead = values[i + 1:i + 1 + CONFIRM_DAYS]
+        new_level = len(ahead) == CONFIRM_DAYS and not any(is_off(a, v) for a in ahead)
+        ok = not is_off(v, ref) or new_level
+        keep.append(ok)
+        if ok:
+            ref = v
     return s[keep]
 
 
@@ -219,9 +220,11 @@ def latest_band(df):
     return df["premium_1y_mean"].iloc[-1], df["premium_1y_std"].iloc[-1]
 
 
-def band_name(n_rows):
-    """Label for the band window: "1y" once a full window exists, else e.g. "120d"."""
-    return "1y" if n_rows >= SIGNAL_WINDOW else f"{n_rows}d"
+def band_label(band_days):
+    """(English, Chinese) label for the band window: "1y" when full, else e.g. "120d"."""
+    if band_days >= SIGNAL_WINDOW:
+        return "1y", "1 年"
+    return f"{band_days}d", f"{band_days} 天"
 
 
 def current_zscore(df, premium_pct):
@@ -235,23 +238,35 @@ def current_zscore(df, premium_pct):
     return (premium_pct - mean) / std
 
 
-def classify_signal(z, band="1y"):
+def classify_signal(z, band_days=SIGNAL_WINDOW):
     """Map a z-score to (console text, chart text, color).
 
     Args:
         z: z-score; any non-finite value means there is no signal.
-        band: Band window label from ``band_name``, used in the texts.
+        band_days: Number of days in the band window, used in the texts.
     """
     if not np.isfinite(z):
         return "無訊號", "No signal", "#555555"
-    zh = "1 年" if band == "1y" else f"{band[:-1]} 天"
+    band, zh = band_label(band_days)
     for threshold, console, chart, color in SIGNAL_LEVELS:
         if z > threshold:
             return console.format(zh=zh), chart.format(band=band), color
 
 
-def print_stats(df, snap, z):
-    """Print key stats; "now" uses each market's latest close (snap), the signal uses z."""
+def build_signal(df, premium_pct):
+    """Everything the console and chart need about the current signal.
+
+    Returns:
+        dict with z, band (label), console / chart text and color.
+    """
+    band_days = min(len(df), SIGNAL_WINDOW)
+    z = current_zscore(df, premium_pct)
+    console, chart, color = classify_signal(z, band_days)
+    return {"z": z, "band": band_label(band_days)[0], "console": console, "chart": chart, "color": color}
+
+
+def print_stats(df, snap, sig):
+    """Print key stats; "now" uses each market's latest close (snap), plus the signal (sig)."""
     p = df["premium_pct"]
 
     print("\n" + "=" * 60)
@@ -278,19 +293,18 @@ def print_stats(df, snap, z):
     print("=" * 60)
 
     # Where the current premium sits in the rolling band
-    band = band_name(len(df))
     mean, std = latest_band(df)
     if pd.isna(std):
         print(f"  近期區間：資料不足（至少需要 {MIN_BAND_DAYS} 個交易日，目前 {len(df)}）")
     elif std == 0:
         print(f"  近期區間：溢價在區間內沒有變動（{mean:+.1f}%），無法計算 z")
     else:
-        print(f"  近期區間（{band}）：{mean:+.1f}% ± {std:.1f}%  (z = {z:+.2f})")
-    print(f"  訊號：{classify_signal(z, band)[0]}")
+        print(f"  近期區間（{sig['band']}）：{mean:+.1f}% ± {std:.1f}%  (z = {sig['z']:+.2f})")
+    print(f"  訊號：{sig['console']}")
     print("=" * 60)
 
 
-def plot_chart(df, snap, z):
+def plot_chart(df, snap, sig):
     """Draw the premium history chart.
 
     Top: daily premium, 5-day avg, rolling avg ±1σ band, and a "Now" label
@@ -301,7 +315,7 @@ def plot_chart(df, snap, z):
 
     # ─── Top: premium ───
     mean, std = df["premium_1y_mean"], df["premium_1y_std"]
-    band = band_name(len(df))
+    band = sig["band"]
 
     # Rolling avg ±1σ band: the premium level drifts, so judge high/low against
     # recent history. Skip it entirely (incl. legend) when there's too little data.
@@ -318,11 +332,11 @@ def plot_chart(df, snap, z):
 
     # Mark "Now" (latest closes, dates may differ), colored by signal
     current = snap["premium_pct"]
-    _, signal_text, color = classify_signal(z, band)
+    color = sig["color"]
     now_x = max(snap["tsm_date"], snap["tw_date"])
     ax1.plot(now_x, current, "o", color=color, markersize=6, zorder=5)
-    z_text = f" (z {z:+.1f})" if np.isfinite(z) else ""
-    ax1.annotate(f"Now: {current:+.1f}%\n{signal_text}{z_text}",
+    z_text = f" (z {sig['z']:+.1f})" if np.isfinite(sig["z"]) else ""
+    ax1.annotate(f"Now: {current:+.1f}%\n{sig['chart']}{z_text}",
                  xy=(now_x, current),
                  xytext=(-150, 30), textcoords="offset points",
                  fontsize=10, fontweight="bold", color=color,
@@ -371,10 +385,10 @@ def main():
     df, closes = fetch_data(period)
     df = calculate_premium(df)
     snap = latest_snapshot(closes["TSM_USD"], closes["TW2330_TWD"], closes["USDTWD"])
-    z = current_zscore(df, snap["premium_pct"])
-    print_stats(df, snap, z)
+    sig = build_signal(df, snap["premium_pct"])
+    print_stats(df, snap, sig)
     save_csv(df)
-    plot_chart(df, snap, z)
+    plot_chart(df, snap, sig)
 
     print(f"\n✅ 完成！可用 Excel 開啟 {OUTPUT_CSV} 進一步分析")
     print(f"   或執行 python {os.path.basename(__file__)} 10y 取得更長期的資料")

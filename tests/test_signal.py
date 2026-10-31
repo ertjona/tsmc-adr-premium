@@ -2,7 +2,9 @@ import numpy as np
 import pandas as pd
 
 from tsmc_adr_premium import (
-    band_name,
+    CONFIRM_DAYS,
+    band_label,
+    build_signal,
     calculate_premium,
     classify_signal,
     current_zscore,
@@ -34,11 +36,21 @@ class TestDropBadTicks:
         assert out.iloc[-1] == 75.0
 
     def test_keeps_lasting_level_change(self):
-        s = series([100.0, 100.0, 70.0, 70.0, 70.0, 70.0])
+        # A new level is accepted once the following CONFIRM_DAYS points agree with it.
+        s = series([100.0] * 8 + [70.0] * 8)
 
         out = drop_bad_ticks(s, max_dev=0.1)
 
-        assert len(out) == 6
+        assert len(out) == 16
+
+    def test_level_change_right_after_first_day_drops_first_point(self):
+        # Documented limit: one point before a level change at the very start
+        # can't be told apart from a bad first tick.
+        s = series([100.0, 70.0, 70.0, 70.0])
+
+        out = drop_bad_ticks(s, max_dev=0.1)
+
+        assert list(out.values) == [70.0, 70.0, 70.0]
 
     def test_drops_bad_tick_on_latest_day(self):
         # The latest day feeds the "Now" point, so a bad print there must be caught too.
@@ -79,8 +91,33 @@ class TestDropBadTicks:
         assert 1.8 not in out.values
         assert len(out) == 4
 
+    def test_drops_run_of_three_and_keeps_good_latest_day(self):
+        s = series([30.0, 30.0, 30.0, 1.8, 1.8, 1.8, 30.0])
+
+        out = drop_bad_ticks(s, max_dev=0.1)
+
+        assert list(out.values) == [30.0, 30.0, 30.0, 30.0]
+        assert out.index[-1] == s.index[-1]
+
+    def test_drops_run_as_long_as_confirm_days(self):
+        s = series([30.0] * 4 + [1.8] * CONFIRM_DAYS + [30.0] * 2)
+
+        out = drop_bad_ticks(s, max_dev=0.1)
+
+        assert 1.8 not in out.values
+        assert len(out) == 6
+
+    def test_run_longer_than_confirm_days_is_taken_as_new_level(self):
+        # Documented limit: a run longer than CONFIRM_DAYS looks like a real level change.
+        s = series([30.0] * 4 + [1.8] * (CONFIRM_DAYS + 1) + [30.0] * 2)
+
+        out = drop_bad_ticks(s, max_dev=0.1)
+
+        assert 1.8 in out.values
+
     def test_short_series_is_kept(self):
         assert len(drop_bad_ticks(series([30.0]), max_dev=0.1)) == 1
+        assert len(drop_bad_ticks(series([30.0, 1.8]), max_dev=0.1)) == 2
         assert len(drop_bad_ticks(series([]), max_dev=0.1)) == 0
 
     def test_drops_nan(self):
@@ -103,8 +140,11 @@ class TestClassifySignal:
     def test_nan_means_no_signal(self):
         assert classify_signal(np.nan)[1] == "No signal"
 
-    def test_chart_text_uses_band_name(self):
-        assert classify_signal(-1.0, band="120d")[1] == "Below 120d avg"
+    def test_texts_use_band_length(self):
+        console, chart, _ = classify_signal(-1.0, band_days=120)
+
+        assert chart == "Below 120d avg"
+        assert "近 120 天" in console
 
     def test_infinite_z_means_no_signal(self):
         assert classify_signal(float("-inf"))[1] == "No signal"
@@ -140,10 +180,21 @@ def test_latest_band_returns_last_mean_and_std():
     assert latest_band(df) == (15.0, 2.0)
 
 
-def test_band_name():
-    assert band_name(1000) == "1y"
-    assert band_name(252) == "1y"
-    assert band_name(120) == "120d"
+def test_band_label():
+    assert band_label(252) == ("1y", "1 年")
+    assert band_label(120) == ("120d", "120 天")
+
+
+def test_build_signal_bundles_z_band_and_texts():
+    n = 100
+    df = pd.DataFrame({"premium_1y_mean": np.full(n, 15.0), "premium_1y_std": np.full(n, 2.0)})
+
+    sig = build_signal(df, 11.0)
+
+    assert sig["z"] == -2.0
+    assert sig["band"] == "100d"
+    assert sig["chart"] == "Well below 100d avg"
+    assert sig["console"].startswith("🔵")
 
 
 def test_current_zscore_is_nan_when_band_is_flat():
