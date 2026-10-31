@@ -1,10 +1,11 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from tsmc_adr_premium import (
     CONFIRM_DAYS,
     band_label,
-    build_signal,
+    build_now_view,
     calculate_premium,
     classify_signal,
     current_zscore,
@@ -185,16 +186,27 @@ def test_band_label():
     assert band_label(120) == ("120d", "120 天")
 
 
-def test_build_signal_bundles_z_band_and_texts():
+def test_build_now_view_bundles_signal_and_open_estimate():
     n = 100
-    df = pd.DataFrame({"premium_1y_mean": np.full(n, 15.0), "premium_1y_std": np.full(n, 2.0)})
+    df = pd.DataFrame({
+        "premium_1y_mean": np.full(n, 15.0),
+        "premium_1y_std": np.full(n, 2.0),
+        "premium_5d": np.full(n, 15.0),
+    })
+    snap = {
+        "tsm_date": pd.Timestamp("2026-10-29"), "tsm_usd": 400.0,
+        "tw_date": pd.Timestamp("2026-10-30"), "tw_twd": 2400.0,
+        "fx_date": pd.Timestamp("2026-10-30"), "usdtwd": 32.0,
+        "premium_pct": 11.0,
+    }
 
-    sig = build_signal(df, 11.0)
+    view = build_now_view(df, snap)
 
-    assert sig["z"] == -2.0
-    assert sig["band"] == "100d"
-    assert sig["chart"] == "Well below 100d avg"
-    assert sig["console"].startswith("🔵")
+    assert view["z"] == -2.0
+    assert view["band"] == "100d"
+    assert view["chart"] == "Well below 100d avg"
+    assert view["console"].startswith("🔵")
+    assert view["est_open"]["price"] == pytest.approx(431.25)
 
 
 def test_current_zscore_is_nan_when_band_is_flat():
