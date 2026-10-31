@@ -35,6 +35,19 @@ PERIOD = "5y"           # 預設抓 5 年資料，可改為 "1y", "2y", "10y", "
 OUTPUT_CSV = "tsmc_adr_premium.csv"
 OUTPUT_PNG = "tsmc_adr_premium.png"
 ADR_RATIO = 5           # 1 TSM ADR = 5 shares of 2330.TW
+SIGNAL_WINDOW = 252     # 用近 1 年的平均與標準差判斷高低（溢價水準會隨時間漂移，不用全期平均）
+SMOOTH_DAYS = 5         # 平滑線天數，降低兩市場收盤時間差造成的每日雜訊
+# 同時偏離前後兩天超過這個比例視為錯誤報價（例：TWD=X 曾出現 1.8 而非 30）
+MAX_JUMP = {"TSM_USD": 0.4, "TW2330_TWD": 0.4, "USDTWD": 0.1}
+
+# (z 下限, 終端機文字, 圖表文字, 顏色)，由高到低比對
+SIGNAL_LEVELS = [
+    (1.5, "🔴 顯著高於近 1 年平均", "Well above 1y avg", "#C0392B"),
+    (0.5, "🟡 略高於近 1 年平均", "Above 1y avg", "#D4A017"),
+    (-0.5, "⚪ 接近近 1 年平均", "Near 1y avg", "#555555"),
+    (-1.5, "🟢 略低於近 1 年平均", "Below 1y avg", "#1D9E75"),
+    (float("-inf"), "🔵 顯著低於近 1 年平均", "Well below 1y avg", "#2E6DB4"),
+]
 
 
 TICKERS = {"TSM_USD": "TSM", "TW2330_TWD": "2330.TW", "USDTWD": "TWD=X"}
@@ -49,6 +62,25 @@ def _download_close(ticker, **kwargs):
     if isinstance(df.columns, pd.MultiIndex):
         df = df.droplevel(level=1, axis=1)
     return df["Close"]
+
+
+def drop_bad_ticks(s, max_dev):
+    """刪掉明顯錯誤的報價與 NaN。
+
+    只刪「單日尖刺」：同時偏離前一天與後一天超過 max_dev 的點。
+    持續的價格變動會保留；最新一天沒有後一天可比，一律保留。
+
+    Args:
+        s: 價格 Series。
+        max_dev: 可接受的偏離比例，例如 0.1 = 10%。
+
+    Returns:
+        過濾後的 Series（新物件）。
+    """
+    s = s.dropna()
+    off_prev = (s / s.shift(1) - 1).abs() > max_dev
+    off_next = (s / s.shift(-1) - 1).abs() > max_dev
+    return s[~(off_prev & off_next)]
 
 
 def fill_latest_close(daily, intraday):
@@ -124,7 +156,7 @@ def fetch_data(period=PERIOD):
     for name, ticker in TICKERS.items():
         daily = _download_close(ticker, period=period)
         intraday = _download_close(ticker, period="5d", interval="5m")
-        closes[name] = fill_latest_close(daily, intraday)
+        closes[name] = drop_bad_ticks(fill_latest_close(daily, intraday), MAX_JUMP[name])
 
     # 合併（以日期為 key，inner join 只保留三者都有資料的交易日）
     merged = pd.concat(closes, axis=1, join="inner").dropna()
@@ -143,11 +175,30 @@ def calculate_premium(df):
     df["premium"] = (df["TSM_implied_TWD"] - df["TW2330_TWD"]) / df["TW2330_TWD"]
     df["premium_pct"] = df["premium"] * 100
 
+    p = df["premium_pct"]
+    df["premium_5d"] = p.rolling(SMOOTH_DAYS).mean()
+    df["premium_1y_mean"] = p.rolling(SIGNAL_WINDOW, min_periods=60).mean()
+    df["premium_1y_std"] = p.rolling(SIGNAL_WINDOW, min_periods=60).std()
+
     return df
 
 
-def print_stats(df, snap):
-    """印出關鍵統計數據；目前溢價用各市場最新收盤（snap）"""
+def current_zscore(df, premium_pct):
+    """目前溢價相對近 1 年平均的 z 分數（用歷史最後一天的滾動平均與標準差）"""
+    return (premium_pct - df["premium_1y_mean"].iloc[-1]) / df["premium_1y_std"].iloc[-1]
+
+
+def classify_signal(z):
+    """依 z 分數回傳 (終端機文字, 圖表文字, 顏色)"""
+    if pd.isna(z):
+        return "資料不足", "Not enough data", "#555555"
+    for threshold, console, chart, color in SIGNAL_LEVELS:
+        if z > threshold:
+            return console, chart, color
+
+
+def print_stats(df, snap, z):
+    """印出關鍵統計數據；目前溢價用各市場最新收盤（snap），訊號用近 1 年的 z 分數"""
     p = df["premium_pct"]
 
     print("\n" + "=" * 60)
@@ -173,58 +224,46 @@ def print_stats(df, snap):
 
     print("=" * 60)
 
-    # 判斷目前水位
-    current = snap["premium_pct"]
-    avg = p.mean()
-    std = p.std()
-    if current > avg + 1.5 * std:
-        signal = "🔴 顯著高於歷史平均（可能反映美股端過熱情緒）"
-    elif current > avg + 0.5 * std:
-        signal = "🟡 略高於歷史平均"
-    elif current < avg - 0.5 * std:
-        signal = "🟢 低於歷史平均（ADR 相對便宜）"
-    else:
-        signal = "⚪ 接近歷史平均水準"
-    print(f"  訊號：{signal}")
+    # 判斷目前水位（相對近 1 年）
+    mean, std = df["premium_1y_mean"].iloc[-1], df["premium_1y_std"].iloc[-1]
+    print(f"  近 1 年區間：{mean:+.1f}% ± {std:.1f}%  (z = {z:+.2f})")
+    print(f"  訊號：{classify_signal(z)[0]}")
     print("=" * 60)
 
 
-def plot_chart(df, snap):
-    """畫出 ADR 溢價歷史走勢圖；右端標注各市場最新收盤的溢價（snap）"""
+def plot_chart(df, snap, z):
+    """畫出 ADR 溢價歷史走勢圖。
+
+    上圖：每日溢價、5 日平均、近 1 年平均 ±1σ 區間；右端標注最新收盤溢價（snap）與訊號。
+    下圖：2330.TW 價格。
+    """
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), height_ratios=[3, 1],
                                     sharex=True, gridspec_kw={"hspace": 0.08})
 
     # ─── 上圖：溢價走勢 ───
-    p = df["premium_pct"]
-    avg = p.mean()
+    mean, std = df["premium_1y_mean"], df["premium_1y_std"]
 
-    # 填色：溢價為紅色系，折價為藍色系
-    ax1.fill_between(df.index, p, avg, where=(p >= avg),
-                     color="#F0997B", alpha=0.3, interpolate=True)
-    ax1.fill_between(df.index, p, avg, where=(p < avg),
-                     color="#85B7EB", alpha=0.3, interpolate=True)
-    ax1.plot(df.index, p, color="#333", linewidth=0.8, alpha=0.8)
+    # 近 1 年平均 ±1σ 區間：溢價水準會漂移，用滾動區間判斷高低
+    ax1.fill_between(df.index, mean - std, mean + std, color="#1D9E75", alpha=0.12,
+                     linewidth=0, label="1y avg ±1σ")
+    ax1.plot(df.index, mean, color="#1D9E75", linewidth=1.2, linestyle="--", label="1y avg")
 
-    # 移動平均線
-    if len(df) > 60:
-        ma60 = p.rolling(60).mean()
-        ax1.plot(df.index, ma60, color="#D85A30", linewidth=1.5,
-                 label="60-day MA", linestyle="--")
-
-    # 平均線
-    ax1.axhline(avg, color="#1D9E75", linewidth=1, linestyle=":",
-                label=f"Period avg: {avg:.1f}%")
+    # 每日溢價雜訊大（收盤時間差），淡色畫出；5 日平均為主線
+    ax1.plot(df.index, df["premium_pct"], color="#999", linewidth=0.6, alpha=0.6, label="Daily")
+    ax1.plot(df.index, df["premium_5d"], color="#222", linewidth=1.3, label=f"{SMOOTH_DAYS}-day avg")
     ax1.axhline(0, color="#888", linewidth=0.5, alpha=0.5)
 
-    # 標注目前值（兩市場最新收盤，日期可能不同）
+    # 標注目前值（兩市場最新收盤，日期可能不同），顏色依訊號
     current = snap["premium_pct"]
+    _, signal_text, color = classify_signal(z)
     now_x = max(snap["tsm_date"], snap["tw_date"])
-    ax1.plot(now_x, current, "o", color="#D85A30", markersize=5)
-    ax1.annotate(f"Now: {current:+.1f}%",
+    ax1.plot(now_x, current, "o", color=color, markersize=6, zorder=5)
+    ax1.annotate(f"Now: {current:+.1f}%\n{signal_text} (z {z:+.1f})",
                  xy=(now_x, current),
-                 xytext=(-80, 20), textcoords="offset points",
-                 fontsize=10, fontweight="bold", color="#D85A30",
-                 arrowprops={"arrowstyle": "->", "color": "#D85A30", "lw": 1.2})
+                 xytext=(-150, 30), textcoords="offset points",
+                 fontsize=10, fontweight="bold", color=color,
+                 bbox={"boxstyle": "round,pad=0.3", "fc": "white", "ec": color, "alpha": 0.9},
+                 arrowprops={"arrowstyle": "->", "color": color, "lw": 1.2})
 
     ax1.set_ylabel("ADR Premium (%)", fontsize=11)
     updated = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M")
@@ -268,9 +307,10 @@ def main():
     df, closes = fetch_data(period)
     df = calculate_premium(df)
     snap = latest_snapshot(closes["TSM_USD"], closes["TW2330_TWD"], closes["USDTWD"])
-    print_stats(df, snap)
+    z = current_zscore(df, snap["premium_pct"])
+    print_stats(df, snap, z)
     save_csv(df)
-    plot_chart(df, snap)
+    plot_chart(df, snap, z)
 
     print(f"\n✅ 完成！可用 Excel 開啟 {OUTPUT_CSV} 進一步分析")
     print(f"   或執行 python {os.path.basename(__file__)} 10y 取得更長期的資料")
