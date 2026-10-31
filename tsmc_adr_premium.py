@@ -176,10 +176,11 @@ def format_snapshot(snap):
 
 
 def implied_tsm_open(snap, premium_ref):
-    """Estimate where TSM opens, from 2330's newer close, FX and a reference premium.
+    """Estimate TSM's next open from 2330's newer close, FX and a reference premium.
 
     Before the NYSE open, 2330 has already closed today while TSM still sits at
-    yesterday's close; TSM's open mostly follows. Over 2016-2026 the 5-day avg
+    yesterday's close; TSM's open mostly follows. On a US holiday the next open
+    is a later day, so the texts name the dates of both closes instead of "today". Over 2016-2026 the 5-day avg
     premium gave the closest estimate (median miss ~0.7%, vs ~1.7% for the 1-year
     avg), so callers pass ``premium_5d``.
 
@@ -188,14 +189,24 @@ def implied_tsm_open(snap, premium_ref):
         premium_ref: Reference premium in %, e.g. the latest 5-day avg.
 
     Returns:
-        dict with ``price`` (USD) and ``change_pct`` vs TSM's last close, or None
-        when 2330 is not newer than TSM (nothing new to go on) or there is no
-        reference premium.
+        dict with ``price`` (USD), ``change_pct`` vs TSM's last close, and
+        ``console`` / ``chart`` text; or None when 2330 is not newer than TSM
+        (nothing new to go on) or there is no reference premium.
     """
     if snap["tw_date"] <= snap["tsm_date"] or pd.isna(premium_ref):
         return None
     price = snap["tw_twd"] * (1 + premium_ref / 100) * ADR_RATIO / snap["usdtwd"]
-    return {"price": price, "change_pct": (price / snap["tsm_usd"] - 1) * 100}
+    change = (price / snap["tsm_usd"] - 1) * 100
+    tsm_d, tw_d = f"{snap['tsm_date']:%m/%d}", f"{snap['tw_date']:%m/%d}"
+    return {
+        "price": price,
+        "change_pct": change,
+        "console": (f"TSM 下次開盤預估：${price:.2f}（較 {tsm_d} 收盤 {change:+.1f}%；"
+                    f"2330 {tw_d} 收盤 × 近 {SMOOTH_DAYS} 日平均溢價 {premium_ref:+.1f}%）"),
+        # chart text: $ escaped for matplotlib mathtext
+        "chart": (f"Est. next TSM open: \\${price:.2f} ({change:+.1f}% vs {tsm_d} close \\${snap['tsm_usd']:.2f})\n"
+                  f"from 2330 {tw_d} close x {SMOOTH_DAYS}-day avg premium ({premium_ref:+.1f}%)"),
+    }
 
 
 def fetch_data(period=PERIOD):
@@ -276,21 +287,30 @@ def classify_signal(z, band_days=SIGNAL_WINDOW):
             return console.format(zh=zh), chart.format(band=band), color
 
 
-def build_signal(df, premium_pct):
-    """Everything the console and chart need about the current signal.
+def build_signal(df, snap):
+    """Everything the console and chart need about where the premium stands now.
+
+    Args:
+        df: History from ``calculate_premium``.
+        snap: Output of ``latest_snapshot``.
 
     Returns:
-        dict with z, band (label), console / chart text and color.
+        dict with z, band (label), console / chart text, color, and est_open
+        (``implied_tsm_open`` result, or None).
     """
     band_days = min(len(df), SIGNAL_WINDOW)
-    z = current_zscore(df, premium_pct)
+    z = current_zscore(df, snap["premium_pct"])
     console, chart, color = classify_signal(z, band_days)
-    return {"z": z, "band": band_label(band_days)[0], "console": console, "chart": chart, "color": color}
+    return {
+        "z": z, "band": band_label(band_days)[0],
+        "console": console, "chart": chart, "color": color,
+        "est_open": implied_tsm_open(snap, df["premium_5d"].iloc[-1]),
+    }
 
 
-def print_stats(df, snap, sig, est):
-    """Print key stats; "now" uses each market's latest close (snap), plus the signal (sig)
-    and, before the NYSE open, the estimated TSM open (est, may be None)."""
+def print_stats(df, snap, sig):
+    """Print key stats; "now" uses each market's latest close (snap), plus the signal
+    and, before the NYSE open, the estimated next TSM open (both in sig)."""
     p = df["premium_pct"]
 
     print("\n" + "=" * 60)
@@ -301,9 +321,8 @@ def print_stats(df, snap, sig, est):
     print("-" * 60)
     print(f"  目前溢價：{snap['premium_pct']:+.1f}%")
     print(f"    {format_snapshot(snap)}")
-    if est:
-        print(f"  TSM 預估開盤：${est['price']:.2f}（較前收 {est['change_pct']:+.1f}%；"
-              f"2330 今日收盤 × 近 {SMOOTH_DAYS} 日平均溢價）")
+    if sig["est_open"]:
+        print(f"  {sig['est_open']['console']}")
     print(f"  全期平均：{p.mean():+.1f}%")
     print(f"  全期中位數：{p.median():+.1f}%")
     print(f"  標準差：  {p.std():.1f}%")
@@ -331,12 +350,12 @@ def print_stats(df, snap, sig, est):
     print("=" * 60)
 
 
-def plot_chart(df, snap, sig, est):
+def plot_chart(df, snap, sig):
     """Draw the premium history chart.
 
     Top: daily premium, 5-day avg, rolling avg ±1σ band, a "Now" label with the
-    latest-close premium (snap) and signal, and the estimated TSM open (est) when
-    there is one. Bottom: 2330.TW price.
+    latest-close premium (snap) and signal, and the estimated next TSM open
+    (sig["est_open"]) when there is one. Bottom: 2330.TW price.
     """
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), height_ratios=[3, 1],
                                     sharex=True, gridspec_kw={"hspace": 0.08})
@@ -364,9 +383,14 @@ def plot_chart(df, snap, sig, est):
     now_x = max(snap["tsm_date"], snap["tw_date"])
     ax1.plot(now_x, current, "o", color=color, markersize=6, zorder=5)
     z_text = f" (z {sig['z']:+.1f})" if np.isfinite(sig["z"]) else ""
+    # Keep the label and the estimate box away from the point: with the point in
+    # the upper part of the axis, the label goes below it and the box to the bottom
+    y_lo, y_hi = ax1.get_ylim()
+    point_frac = (current - y_lo) / (y_hi - y_lo)
+    label_dy = -45 if point_frac > 2 / 3 else 30
     ax1.annotate(f"Now: {current:+.1f}%\n{sig['chart']}{z_text}",
                  xy=(now_x, current),
-                 xytext=(-150, 30), textcoords="offset points",
+                 xytext=(-150, label_dy), textcoords="offset points",
                  fontsize=10, fontweight="bold", color=color,
                  bbox={"boxstyle": "round,pad=0.3", "fc": "white", "ec": color, "alpha": 0.9},
                  arrowprops={"arrowstyle": "->", "color": color, "lw": 1.2})
@@ -380,12 +404,11 @@ def plot_chart(df, snap, sig, est):
                   fontsize=12, pad=12)
     ax1.legend(loc="upper left", fontsize=9)
 
-    # Before the NYSE open: where TSM should open given 2330's move today
-    if est:
-        ax1.text(0.99, 0.97,
-                 f"Est. TSM open: \\${est['price']:.2f} ({est['change_pct']:+.1f}% vs \\${snap['tsm_usd']:.2f})\n"
-                 f"2330 close x {SMOOTH_DAYS}-day avg premium",
-                 transform=ax1.transAxes, ha="right", va="top", fontsize=10, color="#222",
+    # Before the NYSE open: where TSM should open given 2330's newer close
+    if sig["est_open"]:
+        box_y, box_va = (0.03, "bottom") if point_frac > 0.5 else (0.97, "top")
+        ax1.text(0.99, box_y, sig["est_open"]["chart"],
+                 transform=ax1.transAxes, ha="right", va=box_va, fontsize=10, color="#222",
                  bbox={"boxstyle": "round,pad=0.4", "fc": "white", "ec": "#888", "alpha": 0.9})
     ax1.grid(True, alpha=0.15)
 
@@ -421,11 +444,10 @@ def main():
     df, closes = fetch_data(period)
     df = calculate_premium(df)
     snap = latest_snapshot(closes["TSM_USD"], closes["TW2330_TWD"], closes["USDTWD"])
-    sig = build_signal(df, snap["premium_pct"])
-    est = implied_tsm_open(snap, df["premium_5d"].iloc[-1])
-    print_stats(df, snap, sig, est)
+    sig = build_signal(df, snap)
+    print_stats(df, snap, sig)
     save_csv(df)
-    plot_chart(df, snap, sig, est)
+    plot_chart(df, snap, sig)
 
     print(f"\n✅ 完成！可用 Excel 開啟 {OUTPUT_CSV} 進一步分析")
     print(f"   或執行 python {os.path.basename(__file__)} 10y 取得更長期的資料")

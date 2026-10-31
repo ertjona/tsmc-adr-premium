@@ -39,12 +39,12 @@ ruff check tsmc_adr_premium.py tests
 
 Linear pipeline:
 1. `fetch_data(period)` — downloads TSM, 2330.TW, TWD=X daily closes, patches the newest day from 5-minute bars via `fill_latest_close` (Yahoo's same-day daily Close is often NaN right after the close), drops bad ticks via `drop_bad_ticks` (e.g. TWD=X once printed 1.8 instead of 30), inner-joins on date. Returns `(merged, closes)`.
-2. `calculate_premium(df)` — computes premium %, 5-day avg (`premium_5d`), and 1-year rolling mean/std (`premium_1y_mean`, `premium_1y_std`). `build_signal` (via `current_zscore`, `classify_signal`, `band_label`) turns the latest premium into one `sig` dict (z, band label, console/chart text, color) used by both outputs.
+2. `calculate_premium(df)` — computes premium %, 5-day avg (`premium_5d`), and 1-year rolling mean/std (`premium_1y_mean`, `premium_1y_std`). `build_signal(df, snap)` (via `current_zscore`, `classify_signal`, `band_label`, `implied_tsm_open`) turns the latest premium into one `sig` dict (z, band label, console/chart text, color, `est_open`) used by both outputs.
 3. `latest_snapshot(tsm, tw, fx)` — pairs each market's latest close even when dates differ (before the NY open, 2330 is a day ahead of TSM). FX is taken on or before the latest stock date. This is the "Now" value.
-4. `print_stats(df, snap, sig, est)` — console output with signal (z-score vs the 1-year rolling mean, not the full period: the premium level drifts over time)
-   `implied_tsm_open(snap, premium_5d)` → `est`: before the NYSE open (2330 newer than TSM) it estimates TSM's open as 2330 close × (1 + 5-day avg premium) × 5 / FX; otherwise None. The 5-day avg beat yesterday's premium and the 1-year avg as an open estimate over 2016–2026 (median miss ~0.7% vs ~1.7% for the 1-year avg).
+4. `print_stats(df, snap, sig)` — console output with signal (z-score vs the 1-year rolling mean, not the full period: the premium level drifts over time)
+   `implied_tsm_open(snap, premium_5d)` → `sig["est_open"]`: whenever 2330 has a newer close than TSM (normally the 19:30 Taipei run; also after a US-only holiday) it estimates TSM's next open as 2330 close × (1 + 5-day avg premium) × 5 / FX, with texts that name both closes' dates; otherwise None. On the chart the box goes top-right, or bottom-right when the "Now" point is in the upper half. The 5-day avg beat yesterday's premium and the 1-year avg as an open estimate over 2016–2026 (median miss ~0.7% vs ~1.7% for the 1-year avg).
 5. `save_csv(df)` — exports daily data (date-aligned history only)
-6. `plot_chart(df, snap, sig, est)` — matplotlib dual-panel chart: daily premium (faint), 5-day avg, 1-year avg ±1σ band, and a "Now" label colored by signal; title shows each market's latest price and date (`format_snapshot`). Chart text must not use CJK characters or emoji (CI has no CJK font; DejaVu Sans covers Latin plus symbols like ± σ ·), and `$` must be escaped (mathtext).
+6. `plot_chart(df, snap, sig)` — matplotlib dual-panel chart: daily premium (faint), 5-day avg, 1-year avg ±1σ band, and a "Now" label colored by signal; title shows each market's latest price and date (`format_snapshot`). Chart text must not use CJK characters or emoji (CI has no CJK font; DejaVu Sans covers Latin plus symbols like ± σ ·), and `$` must be escaped (mathtext).
 
 ### GitHub Actions (`.github/workflows/update-data.yml`)
 
