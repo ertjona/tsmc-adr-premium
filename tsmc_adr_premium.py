@@ -91,7 +91,9 @@ def latest_snapshot(tsm, tw, fx):
     Returns:
         dict，含各自的日期、價格，以及 premium_pct。
     """
-    tsm, tw, fx = tsm.dropna(), tw.dropna(), fx.dropna()
+    tsm, tw = tsm.dropna(), tw.dropna()
+    # 匯率取最新股價日期當天或之前的值：倫敦時區的 TWD=X 可能已經有「明天」的資料
+    fx = fx.dropna().loc[:max(tsm.index[-1], tw.index[-1])]
     implied = tsm.iloc[-1] / ADR_RATIO * fx.iloc[-1]
     premium = (implied - tw.iloc[-1]) / tw.iloc[-1] * 100
     return {
@@ -100,6 +102,13 @@ def latest_snapshot(tsm, tw, fx):
         "fx_date": fx.index[-1], "usdtwd": float(fx.iloc[-1]),
         "premium_pct": float(premium),
     }
+
+
+def format_snapshot(snap):
+    """把 snap 的三個價格與日期組成一行文字（給終端機與圖表標題共用）"""
+    return (f"TSM ${snap['tsm_usd']:.2f} ({snap['tsm_date']:%m/%d}) · "
+            f"2330.TW NT${snap['tw_twd']:,.0f} ({snap['tw_date']:%m/%d}) · "
+            f"USD/TWD {snap['usdtwd']:.3f} ({snap['fx_date']:%m/%d})")
 
 
 def fetch_data(period=PERIOD):
@@ -148,9 +157,7 @@ def print_stats(df, snap):
     print(f"  交易日數：{len(df)}")
     print("-" * 60)
     print(f"  目前溢價：{snap['premium_pct']:+.1f}%")
-    print(f"    TSM {snap['tsm_date']:%Y-%m-%d} ${snap['tsm_usd']:.2f} · "
-          f"2330 {snap['tw_date']:%Y-%m-%d} NT${snap['tw_twd']:.0f} · "
-          f"USD/TWD {snap['fx_date']:%Y-%m-%d} {snap['usdtwd']:.3f}")
+    print(f"    {format_snapshot(snap)}")
     print(f"  全期平均：{p.mean():+.1f}%")
     print(f"  全期中位數：{p.median():+.1f}%")
     print(f"  標準差：  {p.std():.1f}%")
@@ -221,10 +228,11 @@ def plot_chart(df, snap):
 
     ax1.set_ylabel("ADR Premium (%)", fontsize=11)
     updated = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M")
+    # matplotlib 會把成對的 $ 當成數學式，要跳脫
+    latest = format_snapshot(snap).replace("$", r"\$")
     ax1.set_title("TSMC ADR Premium: TSM (NYSE) vs 2330.TW (TWSE)\n"
-                  f"Latest closes: TSM {snap['tsm_date']:%m/%d} · 2330.TW {snap['tw_date']:%m/%d} · "
-                  f"USD/TWD {snap['fx_date']:%m/%d}  |  Updated {updated} (Taipei)",
-                  fontsize=13, pad=12)
+                  f"Latest: {latest}  |  Updated {updated} (Taipei)",
+                  fontsize=12, pad=12)
     ax1.legend(loc="upper left", fontsize=9)
     ax1.grid(True, alpha=0.15)
 

@@ -40,14 +40,14 @@ ruff check tsmc_adr_premium.py tests
 Linear pipeline:
 1. `fetch_data(period)` — downloads TSM, 2330.TW, TWD=X daily closes, patches the newest day from 5-minute bars via `fill_latest_close` (Yahoo's same-day daily Close is often NaN right after the close), inner-joins on date. Returns `(merged, closes)`.
 2. `calculate_premium(df)` — computes premium %, 60-day MA, rolling stats
-3. `latest_snapshot(tsm, tw, fx)` — pairs each market's latest close even when dates differ (before the NY open, 2330 is a day ahead of TSM). This is the "Now" value.
+3. `latest_snapshot(tsm, tw, fx)` — pairs each market's latest close even when dates differ (before the NY open, 2330 is a day ahead of TSM). FX is taken on or before the latest stock date. This is the "Now" value.
 4. `print_stats(df, snap)` — console output with signal (color-coded by σ from mean)
 5. `save_csv(df)` — exports daily data (date-aligned history only)
-6. `plot_chart(df, snap)` — matplotlib dual-panel chart (premium + 2330.TW price); title shows each price's date
+6. `plot_chart(df, snap)` — matplotlib dual-panel chart (premium + 2330.TW price); title shows each market's latest price and date (`format_snapshot`)
 
 ### GitHub Actions (`.github/workflows/update-data.yml`)
 
-Runs twice per weekday so the PNG is fresh before each market opens: 23:30 UTC (07:30 Taipei, before TWSE opens) and 11:30 UTC (19:30 Taipei, before NYSE opens). Commits CSV + PNG directly to `main`.
+Runs twice per weekday so the PNG is fresh before each market opens: 22:30 UTC (06:30 Taipei, before TWSE opens) and 11:30 UTC (19:30 Taipei, before NYSE opens). Commits CSV + PNG directly to `main`.
 
 ### React (`tsmc_adr_premium_tracker.jsx`)
 

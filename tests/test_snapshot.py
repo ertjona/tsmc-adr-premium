@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tsmc_adr_premium import fill_latest_close, latest_snapshot
+from tsmc_adr_premium import fill_latest_close, format_snapshot, latest_snapshot
 
 
 def daily(values, dates):
@@ -84,3 +84,28 @@ class TestLatestSnapshot:
 
         assert snap["tsm_date"] == pd.Timestamp("2026-10-29")
         assert snap["tsm_usd"] == 400.0
+
+    def test_fx_is_taken_on_or_before_latest_stock_date(self):
+        # At 23:30 UTC, London is already on the next day, so TWD=X can have a row
+        # dated after both stocks. That row must not be used.
+        tsm = daily([400.0], ["2026-10-29"])
+        tw = daily([2400.0], ["2026-10-29"])
+        fx = daily([32.0, 33.0], ["2026-10-29", "2026-10-30"])
+
+        snap = latest_snapshot(tsm, tw, fx)
+
+        assert snap["fx_date"] == pd.Timestamp("2026-10-29")
+        assert snap["usdtwd"] == 32.0
+
+
+def test_format_snapshot_shows_price_and_date_of_each_market():
+    snap = {
+        "tsm_date": pd.Timestamp("2026-10-29"), "tsm_usd": 405.99,
+        "tw_date": pd.Timestamp("2026-10-30"), "tw_twd": 2370.0,
+        "fx_date": pd.Timestamp("2026-10-30"), "usdtwd": 32.5669,
+        "premium_pct": 11.6,
+    }
+
+    text = format_snapshot(snap)
+
+    assert text == "TSM $405.99 (10/29) · 2330.TW NT$2,370 (10/30) · USD/TWD 32.567 (10/30)"

@@ -3,7 +3,7 @@ name: Update TSMC ADR Premium Data
 on:
   schedule:
     # GitHub cron 只能用 UTC，排程也可能延遲數十分鐘，所以預留緩衝
-    - cron: '30 23 * * 1-5'  # 台股開盤前：台北週二～六 07:30（美股收盤後）
+    - cron: '30 22 * * 1-5'  # 台股開盤前：台北週二～六 06:30（美股收盤後）
     - cron: '30 11 * * 1-5'  # 美股開盤前：台北週一～五 19:30（台股收盤後）
   workflow_dispatch:           # 允許手動觸發
 
@@ -39,4 +39,6 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add tsmc_adr_premium.csv tsmc_adr_premium.png
           git diff --staged --quiet || git commit -m "data: update ADR premium $(date -u +%Y-%m-%d)"
+          # main 可能在執行期間有新 commit（例如剛 merge PR），先 rebase 再推
+          git pull --rebase origin main
           git push
