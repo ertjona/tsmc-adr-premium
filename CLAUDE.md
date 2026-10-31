@@ -22,7 +22,7 @@ python tsmc_adr_premium.py
 python tsmc_adr_premium.py 10y
 ```
 
-Outputs: `tsmc_adr_premium.csv` and `tsmc_adr_premium.png`
+Outputs: `tsmc_adr_premium.csv` and `tsmc_adr_premium.png` (git-ignored on `main`; the latest copies live on the `data` branch)
 
 Dependencies: `yfinance`, `pandas`, `matplotlib` (installed in `.venv/`)
 
@@ -48,7 +48,7 @@ Linear pipeline:
 
 ### GitHub Actions (`.github/workflows/update-data.yml`)
 
-Runs twice per weekday so the PNG is fresh before each market opens: 22:30 UTC (06:30 Taipei, before TWSE opens) and 11:30 UTC (19:30 Taipei, before NYSE opens). Commits CSV + PNG directly to `main`.
+Runs twice per weekday so the PNG is fresh before each market opens: 22:30 UTC (06:30 Taipei, before TWSE opens) and 11:30 UTC (19:30 Taipei, before NYSE opens). Publishes the CSV + PNG (plus a README that shows the chart) as a single commit on the orphan `data` branch, force-pushed each run, so outputs don't pile up in history. It never commits to `main`. Latest chart: https://github.com/ertjona/tsmc-adr-premium/tree/data
 
 ### React (`tsmc_adr_premium_tracker.jsx`)
 
