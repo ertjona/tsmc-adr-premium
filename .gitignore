@@ -12,3 +12,7 @@ adr-viz/dist/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+
+# Script outputs: published to the `data` branch by the workflow, not kept on main
+tsmc_adr_premium.csv
+tsmc_adr_premium.png
