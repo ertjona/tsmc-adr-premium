@@ -175,6 +175,29 @@ def format_snapshot(snap):
             f"USD/TWD {snap['usdtwd']:.3f} ({snap['fx_date']:%m/%d})")
 
 
+def implied_tsm_open(snap, premium_ref):
+    """Estimate where TSM opens, from 2330's newer close, FX and a reference premium.
+
+    Before the NYSE open, 2330 has already closed today while TSM still sits at
+    yesterday's close; TSM's open mostly follows. Over 2016-2026 the 5-day avg
+    premium gave the closest estimate (median miss ~0.7%, vs ~1.7% for the 1-year
+    avg), so callers pass ``premium_5d``.
+
+    Args:
+        snap: Output of ``latest_snapshot``.
+        premium_ref: Reference premium in %, e.g. the latest 5-day avg.
+
+    Returns:
+        dict with ``price`` (USD) and ``change_pct`` vs TSM's last close, or None
+        when 2330 is not newer than TSM (nothing new to go on) or there is no
+        reference premium.
+    """
+    if snap["tw_date"] <= snap["tsm_date"] or pd.isna(premium_ref):
+        return None
+    price = snap["tw_twd"] * (1 + premium_ref / 100) * ADR_RATIO / snap["usdtwd"]
+    return {"price": price, "change_pct": (price / snap["tsm_usd"] - 1) * 100}
+
+
 def fetch_data(period=PERIOD):
     """Download TSM, 2330.TW and USD/TWD closes from yfinance.
 
@@ -265,8 +288,9 @@ def build_signal(df, premium_pct):
     return {"z": z, "band": band_label(band_days)[0], "console": console, "chart": chart, "color": color}
 
 
-def print_stats(df, snap, sig):
-    """Print key stats; "now" uses each market's latest close (snap), plus the signal (sig)."""
+def print_stats(df, snap, sig, est):
+    """Print key stats; "now" uses each market's latest close (snap), plus the signal (sig)
+    and, before the NYSE open, the estimated TSM open (est, may be None)."""
     p = df["premium_pct"]
 
     print("\n" + "=" * 60)
@@ -277,6 +301,9 @@ def print_stats(df, snap, sig):
     print("-" * 60)
     print(f"  目前溢價：{snap['premium_pct']:+.1f}%")
     print(f"    {format_snapshot(snap)}")
+    if est:
+        print(f"  TSM 預估開盤：${est['price']:.2f}（較前收 {est['change_pct']:+.1f}%；"
+              f"2330 今日收盤 × 近 {SMOOTH_DAYS} 日平均溢價）")
     print(f"  全期平均：{p.mean():+.1f}%")
     print(f"  全期中位數：{p.median():+.1f}%")
     print(f"  標準差：  {p.std():.1f}%")
@@ -304,11 +331,12 @@ def print_stats(df, snap, sig):
     print("=" * 60)
 
 
-def plot_chart(df, snap, sig):
+def plot_chart(df, snap, sig, est):
     """Draw the premium history chart.
 
-    Top: daily premium, 5-day avg, rolling avg ±1σ band, and a "Now" label
-    with the latest-close premium (snap) and signal. Bottom: 2330.TW price.
+    Top: daily premium, 5-day avg, rolling avg ±1σ band, a "Now" label with the
+    latest-close premium (snap) and signal, and the estimated TSM open (est) when
+    there is one. Bottom: 2330.TW price.
     """
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), height_ratios=[3, 1],
                                     sharex=True, gridspec_kw={"hspace": 0.08})
@@ -351,6 +379,14 @@ def plot_chart(df, snap, sig):
                   f"Latest: {latest}  |  Updated {updated} (Taipei)",
                   fontsize=12, pad=12)
     ax1.legend(loc="upper left", fontsize=9)
+
+    # Before the NYSE open: where TSM should open given 2330's move today
+    if est:
+        ax1.text(0.99, 0.97,
+                 f"Est. TSM open: \\${est['price']:.2f} ({est['change_pct']:+.1f}% vs \\${snap['tsm_usd']:.2f})\n"
+                 f"2330 close x {SMOOTH_DAYS}-day avg premium",
+                 transform=ax1.transAxes, ha="right", va="top", fontsize=10, color="#222",
+                 bbox={"boxstyle": "round,pad=0.4", "fc": "white", "ec": "#888", "alpha": 0.9})
     ax1.grid(True, alpha=0.15)
 
     # ─── Bottom: 2330.TW price for context ───
@@ -386,9 +422,10 @@ def main():
     df = calculate_premium(df)
     snap = latest_snapshot(closes["TSM_USD"], closes["TW2330_TWD"], closes["USDTWD"])
     sig = build_signal(df, snap["premium_pct"])
-    print_stats(df, snap, sig)
+    est = implied_tsm_open(snap, df["premium_5d"].iloc[-1])
+    print_stats(df, snap, sig, est)
     save_csv(df)
-    plot_chart(df, snap, sig)
+    plot_chart(df, snap, sig, est)
 
     print(f"\n✅ 完成！可用 Excel 開啟 {OUTPUT_CSV} 進一步分析")
     print(f"   或執行 python {os.path.basename(__file__)} 10y 取得更長期的資料")
