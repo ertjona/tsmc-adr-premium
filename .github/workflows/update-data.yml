@@ -2,9 +2,11 @@ name: Update TSMC ADR Premium Data
 
 on:
   schedule:
-    # GitHub cron is UTC-only and runs can start tens of minutes late, so leave a buffer
-    - cron: '30 22 * * 1-5'  # before TWSE opens: Taipei Tue-Sat 06:30 (after the NYSE close)
-    - cron: '30 11 * * 1-5'  # before NYSE opens: Taipei Mon-Fri 19:30 (after the TWSE close)
+    # Hourly on weekdays (UTC). GitHub starts scheduled runs late, often 2-5 hours and
+    # up to ~9 hours, so two fixed runs missed their windows; with a run every hour
+    # some always land after each close. Off the hour (:17) to avoid peak load.
+    # Free for a public repo, and the data branch is force-pushed, so runs don't add history.
+    - cron: '17 * * * 1-5'
   workflow_dispatch:           # allow manual runs
 
 concurrency:
@@ -45,7 +47,7 @@ jobs:
           cat > README.md <<EOF
           # TSMC ADR Premium (latest)
 
-          Updated ${stamp}. Regenerated twice per weekday by the workflow on \`main\`;
+          Updated ${stamp}. Regenerated hourly on weekdays by the workflow on \`main\`;
           this branch holds only the latest output and is force-pushed each run.
 
           ![TSMC ADR premium](tsmc_adr_premium.png)

@@ -22,7 +22,7 @@ Notes:
 
 import os
 import sys
-from datetime import datetime
+from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
 
 import matplotlib.dates as mdates
@@ -44,6 +44,12 @@ MAX_JUMP = {"TSM_USD": 0.4, "TW2330_TWD": 0.4, "USDTWD": 0.1}
 # a jump bigger than MAX_JUMP is accepted as a real new level only when this many
 # following days agree with it; runs of bad ticks up to this length are caught
 CONFIRM_DAYS = 5
+# local close time per market (+5 min for the closing print); a price from today
+# before this time is a live intraday price, not a close
+MARKET_CLOSE = {
+    "tsm": ("America/New_York", time(16, 5)),
+    "tw": ("Asia/Taipei", time(13, 35)),
+}
 
 # (z lower bound, console text, chart text, color), matched from high to low
 SIGNAL_LEVELS = [
@@ -168,10 +174,32 @@ def latest_snapshot(tsm, tw, fx):
     }
 
 
+def is_live(day, market, now_utc):
+    """True when ``day`` is today on ``market`` ("tsm" or "tw") and it hasn't closed yet."""
+    tz, close_at = MARKET_CLOSE[market]
+    local = now_utc.astimezone(ZoneInfo(tz))
+    return day.date() == local.date() and local.time() < close_at
+
+
+def mark_live(snap, now_utc):
+    """Copy of ``snap`` with ``tsm_live`` / ``tw_live`` flags for intraday prices.
+
+    Hourly runs can land during a session, when the latest price is still moving.
+    """
+    out = dict(snap)
+    for market in MARKET_CLOSE:
+        out[f"{market}_live"] = is_live(snap[f"{market}_date"], market, now_utc)
+    return out
+
+
 def format_snapshot(snap):
     """One line with each market's price and date (shared by console and chart title)."""
-    return (f"TSM ${snap['tsm_usd']:.2f} ({snap['tsm_date']:%m/%d}) · "
-            f"2330.TW NT${snap['tw_twd']:,.0f} ({snap['tw_date']:%m/%d}) · "
+    def when(market):
+        live = " live" if snap.get(f"{market}_live") else ""
+        return f"{snap[f'{market}_date']:%m/%d}{live}"
+
+    return (f"TSM ${snap['tsm_usd']:.2f} ({when('tsm')}) · "
+            f"2330.TW NT${snap['tw_twd']:,.0f} ({when('tw')}) · "
             f"USD/TWD {snap['usdtwd']:.3f} ({snap['fx_date']:%m/%d})")
 
 
@@ -192,9 +220,11 @@ def implied_tsm_open(snap, premium_ref):
     Returns:
         dict with ``price`` (USD), ``change_pct`` vs TSM's last close, and
         ``console`` / ``chart`` text; or None when 2330 is not newer than TSM
-        (nothing new to go on) or there is no reference premium.
+        (nothing new to go on), 2330 is still trading (``tw_live``), or there is
+        no reference premium.
     """
-    if snap["tw_date"] <= snap["tsm_date"] or pd.isna(premium_ref):
+    # 2330 still trading: its "close" isn't final yet, so wait for the TWSE close
+    if snap["tw_date"] <= snap["tsm_date"] or snap.get("tw_live") or pd.isna(premium_ref):
         return None
     price = snap["tw_twd"] * (1 + premium_ref / 100) * ADR_RATIO / snap["usdtwd"]
     change = (price / snap["tsm_usd"] - 1) * 100
@@ -476,7 +506,8 @@ def main():
 
     df, closes = fetch_data(period)
     df = calculate_premium(df)
-    snap = latest_snapshot(closes["TSM_USD"], closes["TW2330_TWD"], closes["USDTWD"])
+    snap = mark_live(latest_snapshot(closes["TSM_USD"], closes["TW2330_TWD"], closes["USDTWD"]),
+                     datetime.now(UTC))
     view = build_now_view(df, snap)
     print_stats(df, snap, view)
     save_csv(df)

@@ -40,7 +40,7 @@ ruff check tsmc_adr_premium.py tests
 Linear pipeline:
 1. `fetch_data(period)` — downloads TSM, 2330.TW, TWD=X daily closes, patches the newest day from 5-minute bars via `fill_latest_close` (Yahoo's same-day daily Close is often NaN right after the close), drops bad ticks via `drop_bad_ticks` (e.g. TWD=X once printed 1.8 instead of 30), inner-joins on date. Returns `(merged, closes)`.
 2. `calculate_premium(df)` — computes premium %, 5-day avg (`premium_5d`), and 1-year rolling mean/std (`premium_1y_mean`, `premium_1y_std`). `build_now_view(df, snap)` (via `current_zscore`, `classify_signal`, `band_label`, `implied_tsm_open`) builds one `view` dict about "now" (z, band label, signal console/chart text, color, `est_open`) used by both outputs.
-3. `latest_snapshot(tsm, tw, fx)` — pairs each market's latest close even when dates differ (before the NY open, 2330 is a day ahead of TSM). FX is taken on or before the latest stock date. This is the "Now" value.
+3. `latest_snapshot(tsm, tw, fx)` — pairs each market's latest close even when dates differ (before the NY open, 2330 is a day ahead of TSM). FX is taken on or before the latest stock date. This is the "Now" value. `mark_live(snap, now_utc)` adds `tsm_live` / `tw_live` when a price is from a session that hasn't closed yet (`MARKET_CLOSE`); `format_snapshot` then shows e.g. "(11/03 live)", and no open estimate is made while 2330 is still trading.
 4. `print_stats(df, snap, view)` — console output with signal (z-score vs the 1-year rolling mean, not the full period: the premium level drifts over time)
    `implied_tsm_open(snap, premium_5d)` → `view["est_open"]`: whenever 2330 has a newer close than TSM (normally the 19:30 Taipei run; also after a US-only holiday) it estimates TSM's next open as 2330 close × (1 + 5-day avg premium) × 5 / FX, with texts that name both closes' dates; otherwise None. Its texts are plain; `plot_chart` escapes `$` via `mathtext_safe`. `place_annotations` puts the box top-right when there is room above the "Now" point and the recent ~30% of the lines, else bottom-right, and puts the "Now" label below the point when it is in the top third. The 5-day avg beat yesterday's premium and the 1-year avg as an open estimate over 2016–2026 (median miss ~0.7% vs ~1.7% for the 1-year avg).
 5. `save_csv(df)` — exports daily data (date-aligned history only)
@@ -48,7 +48,7 @@ Linear pipeline:
 
 ### GitHub Actions (`.github/workflows/update-data.yml`)
 
-Runs twice per weekday so the PNG is fresh before each market opens: 22:30 UTC (06:30 Taipei, before TWSE opens) and 11:30 UTC (19:30 Taipei, before NYSE opens). Publishes the CSV + PNG (plus a README that shows the chart) as a single commit on the orphan `data` branch, force-pushed each run, so outputs don't pile up in history. It never commits to `main`. Latest chart: https://github.com/ertjona/tsmc-adr-premium/tree/data
+Runs hourly on weekdays (`17 * * * 1-5`, UTC). GitHub starts scheduled runs late (observed 2–5 hours, up to ~9), so fixed 06:30/19:30 runs missed their windows; hourly runs mean some always land after each close. Runs during a session show live prices (see `mark_live`). Publishes the CSV + PNG (plus a README that shows the chart) as a single commit on the orphan `data` branch, force-pushed each run, so outputs don't pile up in history. It never commits to `main`. Latest chart: https://github.com/ertjona/tsmc-adr-premium/tree/data
 
 ### React (`tsmc_adr_premium_tracker.jsx`)
 
