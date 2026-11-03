@@ -1,8 +1,13 @@
+from datetime import UTC, datetime
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from tsmc_adr_premium import fill_latest_close, format_snapshot, latest_snapshot
+
+# After every date in these tests, so no price counts as live
+NOW = datetime(2026, 11, 5, 12, tzinfo=UTC)
 
 
 def daily(values, dates):
@@ -65,7 +70,7 @@ class TestLatestSnapshot:
         tw = daily([2300.0, 2400.0], ["2026-10-29", "2026-10-30"])
         fx = daily([32.0, 32.5], ["2026-10-29", "2026-10-30"])
 
-        snap = latest_snapshot(tsm, tw, fx)
+        snap = latest_snapshot(tsm, tw, fx, NOW)
 
         assert snap["tsm_date"] == pd.Timestamp("2026-10-29")
         assert snap["tw_date"] == pd.Timestamp("2026-10-30")
@@ -80,7 +85,7 @@ class TestLatestSnapshot:
         tw = daily([2400.0], ["2026-10-29"])
         fx = daily([32.5], ["2026-10-29"])
 
-        snap = latest_snapshot(tsm, tw, fx)
+        snap = latest_snapshot(tsm, tw, fx, NOW)
 
         assert snap["tsm_date"] == pd.Timestamp("2026-10-29")
         assert snap["tsm_usd"] == 400.0
@@ -92,7 +97,7 @@ class TestLatestSnapshot:
         tw = daily([2400.0], ["2026-10-29"])
         fx = daily([32.0, 33.0], ["2026-10-29", "2026-10-30"])
 
-        snap = latest_snapshot(tsm, tw, fx)
+        snap = latest_snapshot(tsm, tw, fx, NOW)
 
         assert snap["fx_date"] == pd.Timestamp("2026-10-29")
         assert snap["usdtwd"] == 32.0
