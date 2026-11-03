@@ -44,11 +44,13 @@ MAX_JUMP = {"TSM_USD": 0.4, "TW2330_TWD": 0.4, "USDTWD": 0.1}
 # a jump bigger than MAX_JUMP is accepted as a real new level only when this many
 # following days agree with it; runs of bad ticks up to this length are caught
 CONFIRM_DAYS = 5
-# local close time per market (+5 min for the closing print); a price from today
-# before this time is a live intraday price, not a close
+# local time after which today's price counts as the close; earlier, it is a live
+# intraday price. NYSE closes 16:00; TWSE's closing auction ends 13:30 and its print
+# can reach Yahoo late, so allow 30 min. NYSE half-days (13:00 close) still show
+# "live" until 16:05. USD/TWD trades almost around the clock, so it is never flagged.
 MARKET_CLOSE = {
     "tsm": ("America/New_York", time(16, 5)),
-    "tw": ("Asia/Taipei", time(13, 35)),
+    "tw": ("Asia/Taipei", time(14, 0)),
 }
 
 # (z lower bound, console text, chart text, color), matched from high to low
@@ -185,6 +187,8 @@ def mark_live(snap, now_utc):
     """Copy of ``snap`` with ``tsm_live`` / ``tw_live`` flags for intraday prices.
 
     Hourly runs can land during a session, when the latest price is still moving.
+    Apply it to ``latest_snapshot``'s output before ``format_snapshot`` and
+    ``implied_tsm_open``; without the flags they treat every price as a close.
     """
     out = dict(snap)
     for market in MARKET_CLOSE:

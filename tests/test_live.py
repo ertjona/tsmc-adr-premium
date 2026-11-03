@@ -35,6 +35,16 @@ class TestIsLive:
         # 21:30 UTC = 16:30 New York
         assert not is_live(pd.Timestamp("2026-11-03"), "tsm", utc("2026-11-03T21:30"))
 
+    def test_nyse_in_summer_time(self):
+        # EDT (UTC-4): 19:30 UTC = 15:30 New York -> still open; 20:30 UTC = 16:30 -> closed
+        assert is_live(pd.Timestamp("2026-07-15"), "tsm", utc("2026-07-15T19:30"))
+        assert not is_live(pd.Timestamp("2026-07-15"), "tsm", utc("2026-07-15T20:30"))
+
+    def test_twse_counts_as_live_until_14_00(self):
+        # The 13:30 closing print can reach Yahoo late, so wait until 14:00 Taipei.
+        assert is_live(pd.Timestamp("2026-11-03"), "tw", utc("2026-11-03T05:45"))   # 13:45
+        assert not is_live(pd.Timestamp("2026-11-03"), "tw", utc("2026-11-03T06:00"))  # 14:00
+
     def test_older_date_is_never_live(self):
         assert not is_live(pd.Timestamp("2026-11-02"), "tw", utc("2026-11-03T03:00"))
 
